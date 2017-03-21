@@ -41,7 +41,7 @@ proxy_server::proxy_server(muduo::net::EventLoop *loop, const muduo::net::InetAd
 }
 
 bool proxy_server::is_valid_addr(const muduo::net::InetAddress &addr) {
-  return addr.toIp() != "0.0.0.0" && addr.toIp() != "::";
+  return addr.ipNetEndian() != INADDR_ANY;
 }
 
 void proxy_server::onConnection(const muduo::net::TcpConnectionPtr &con)
@@ -143,20 +143,16 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
         state = kGotRequest;
         uint16_t port = request.port();
         std::string domain_name = request.domain_name();
-        if(request.method() == "CONNECT")
+        if(request.method() != "CONNECT")
         {
           std::string request_str = request.proxy_request();
-          dns_resolver::ResolveCallback cb =
-              (boost::bind(&proxy_server::onResolve, this, _1, _2, _3, _4),
-                  boost::weak_ptr<muduo::net::TcpConnection>(con), port, request_str, true);
-          resolver_.resolve(domain_name, cb);
+          resolver_.resolve(domain_name,
+                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, request_str, _1), false);
         }
         else
         {
-          dns_resolver::ResolveCallback cb =
-              (boost::bind(&proxy_server::onResolve, this, _1, _2, _3),
-                  boost::weak_ptr<muduo::net::TcpConnection>(con), port);
-          resolver_.resolve(domain_name, cb);
+          resolver_.resolve(domain_name,
+                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, _1), true);
         }
       }
       else
@@ -279,9 +275,8 @@ void proxy_server::onResolveError(const muduo::net::TcpConnectionPtr &con)
   con->shutdown();
 }
 
-void proxy_server::onResolve(const muduo::net::InetAddress &addr,
-                             const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
-                             uint16_t port)
+void proxy_server::onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
+                             uint16_t port, const muduo::net::InetAddress &addr)
 {
   auto con = wkCon.lock();
   if(!con)
@@ -300,16 +295,16 @@ void proxy_server::onResolve(const muduo::net::InetAddress &addr,
     set_con_state(con_name, kResolved);
     muduo::net::InetAddress address (addr.toIp(), port);
     TunnelPtr tunnel(new Tunnel(loop_, address, con, true));
-    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state, con_name, kTransport_https));
+    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state, this, con_name, kTransport_http));
     tunnel->setup();
     tunnel->connect();
     tunnels_[con_name] = tunnel;
   }
 }
 
-void proxy_server::onResolve(const muduo::net::InetAddress &addr,
-                             const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
-                             uint16_t port, const std::string &request)
+void proxy_server::onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
+                             uint16_t port, const std::string &request,
+                             const muduo::net::InetAddress &addr)
 {
   auto con = wkCon.lock();
   if(!con)
@@ -327,7 +322,7 @@ void proxy_server::onResolve(const muduo::net::InetAddress &addr,
     set_con_state(con_name, kResolved);
     muduo::net::InetAddress address(addr.toIp(), port);
     TunnelPtr tunnel(new Tunnel(loop_, address, con, false));
-    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state, con_name, kTransport_http));
+    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state,this, con_name, kTransport_https));
     tunnel->set_request(request);
     tunnel->setup();
     tunnel->connect();

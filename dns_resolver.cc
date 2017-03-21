@@ -25,19 +25,9 @@ bool convert_host(const std::string& host, muduo::net::Buffer* buf)
   std::string label;
   for(auto& ch : host)
   {
-    if(std::isalpha(ch))
+    if(std::isalpha(ch) || std::isdigit(ch))
     {
       label.push_back(ch);
-    }
-    else if(std::isdigit(ch))
-    {
-      if(label.empty())
-      {
-        LOG_ERROR << "label can't start with " << ch;
-        return false;
-      }
-      else
-        label.push_back(ch);
     }
     else if( ch == '_')
     {
@@ -277,7 +267,7 @@ bool dns_resolver::resolve(const std::string &host, const dns_resolver::ResolveC
   buf.appendInt16(query_type);
   buf.appendInt16(query_class);
   auto timer_id = loop_->runAfter(timeout_, boost::bind(&dns_resolver::handleTimeout, this, transaction_id));
-  dns_datas_[transaction_id] = { timer_id, cb, host, ipv6 , 1 };
+  dns_datas_[transaction_id] = { cb, host, ipv6 , 1, timer_id };
   send(&buf);
   return true;
 }
@@ -358,14 +348,16 @@ void dns_resolver::send(muduo::net::Buffer *buf)
 void dns_resolver::handleTimeout(uint16_t transaction_id)
 {
   LOG_ERROR <<"transaction_id "<< transaction_id << " timeout, try again!";
-  auto entry = dns_datas_[transaction_id];
+  auto& entry = dns_datas_[transaction_id];
   if(++entry.count > MAX_TIMEOUT)
   {
     // use 0.0.0.0 to call resolveCallback function, notify client that the resolve is error!
     entry.resolveCallback(muduo::net::InetAddress());
     dns_datas_.erase(transaction_id);
+    return;
   }
-  resolve(transaction_id, entry);
+  else
+    resolve(transaction_id);
 }
 
 void dns_resolver::handleRead(muduo::Timestamp receiveTime)
@@ -527,9 +519,10 @@ void dns_resolver::handleError()
 }
 
 // call by timeout function
-void dns_resolver::resolve(uint16_t transaction_id, const struct Entry &entry)
+void dns_resolver::resolve(uint16_t transaction_id)
 {
   assert(dns_datas_.count(transaction_id));
+  auto& entry = dns_datas_[transaction_id];
   muduo::net::Buffer buf;
   buf.appendInt16(transaction_id);
   struct packet::flag query;
@@ -546,7 +539,7 @@ void dns_resolver::resolve(uint16_t transaction_id, const struct Entry &entry)
   buf.appendInt16(query_class);
   buf.appendInt16(query_type);
   auto timer_id = loop_->runAfter(timeout_, boost::bind(&dns_resolver::handleTimeout, this, transaction_id));
-  dns_datas_[transaction_id] = { timer_id, entry.resolveCallback, entry.domain, entry.ipv6 , entry.count };
+  entry.timerId = timer_id;
   send(&buf);
 }
 

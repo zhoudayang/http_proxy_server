@@ -35,13 +35,12 @@ class proxy_server : boost::noncopyable
 
   void onMessage(const muduo::net::TcpConnectionPtr& con, muduo::net::Buffer* buf, muduo::Timestamp);
 
-  void onResolve(const muduo::net::InetAddress &addr,
-            const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
-            uint16_t port, const std::string& request);
+  void onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
+                 uint16_t port, const std::string& request,
+                 const muduo::net::InetAddress &addr);
 
-  void onResolve(const muduo::net::InetAddress &addr,
-                 const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
-                 uint16_t port);
+  void onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
+                 uint16_t port, const muduo::net::InetAddress &addr);
 
   void start() { server_.start(); }
 

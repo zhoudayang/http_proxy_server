@@ -10,7 +10,7 @@ Tunnel::Tunnel(muduo::net::EventLoop *loop,
                const muduo::net::InetAddress &addr,
                const Tunnel::TcpConnectionPtr &serverCon,
                bool https)
-  : loop_(),
+  : loop_(loop),
     client_(loop_, addr, "proxy_client"),
     serverCon_(serverCon),
     timerId_(),
@@ -37,15 +37,19 @@ void Tunnel::onConnection(const Tunnel::TcpConnectionPtr &con) {
     serverCon_->setContext(con);
     clientCon_ = con;
     serverCon_->startRead();
+    // 是否是https代理
     if(https_)
     {
       onHttpsConnection();
     }
+    else
+    {
+      if(!request_.empty())
+        con->send(request_.c_str());
+    }
     if(onTransportCallback_)
     {
       onTransportCallback();
-      if(!request_.empty())
-        con->send(request_.c_str());
     }
   }
   else

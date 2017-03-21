@@ -38,17 +38,17 @@ class dns_resolver : boost::noncopyable
 
  private:
   // 最大重试次数
-  const static int MAX_TIMEOUT = 3;
+  const static int MAX_TIMEOUT = 0;
   // max ttl
   const static int TTL = 500;
 
   struct Entry
   {
-    muduo::net::TimerId timerId;     // timeout id
     ResolveCallback resolveCallback; // resolve callback function
     std::string domain;              // domain name
     bool ipv6;                      //  ipv6 ?
     uint8_t count;                   // retry count
+    muduo::net::TimerId timerId;     // timeout id
   };
 
   struct AF_INET_Entry
@@ -84,7 +84,7 @@ class dns_resolver : boost::noncopyable
   // call by handleRead function
   void MessageCallback(muduo::Timestamp receiveTime);
 
-  void resolve(uint16_t transaction_id, const struct Entry& entry);
+  void resolve(uint16_t transaction_id);
 
   // function to process write to sockfd_
   void handleWrite();

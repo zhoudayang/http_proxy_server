@@ -22,6 +22,7 @@ class EventLoop;
 }
 }
 
+// todo : 提升稳定性
 namespace zy
 {
 class dns_resolver : boost::noncopyable
@@ -42,13 +43,29 @@ class dns_resolver : boost::noncopyable
   // max ttl
   const static int TTL = 500;
 
-  struct Entry
+  class Entry
   {
-    ResolveCallback resolveCallback; // resolve callback function
-    std::string domain;              // domain name
-    bool ipv6;                      //  ipv6 ?
-    uint8_t count;                   // retry count
-    muduo::net::TimerId timerId;     // timeout id
+   public:
+    Entry(const ResolveCallback& cb, const std::string& domain_name, bool ipv6, uint8_t count, muduo::net::TimerId timerId)
+        : resolveCallback_(cb), domain_(domain_name), ipv6_(ipv6), count_(count), timerId_(timerId)
+    {
+      assert(resolveCallback_);
+    }
+
+    bool ipv6() const { return  ipv6_; }
+    uint8_t count() const { return count_; }
+    muduo::net::TimerId timerId() { return timerId_; }
+    void resolveCb(const muduo::net::InetAddress& addr) { assert(resolveCallback_); resolveCallback_(addr); }
+    void set_timer_id(const muduo::net::TimerId& timerId) { timerId_ = timerId; }
+    int add_count_and_get() { return ++ count_; }
+    std::string domain() const { return domain_; }
+
+   private:
+    ResolveCallback resolveCallback_; // resolve callback function
+    std::string domain_;              // domain name
+    bool ipv6_;                      //  ipv6 ?
+    uint8_t count_;                   // retry count
+    muduo::net::TimerId timerId_;     // timeout id
   };
 
   struct AF_INET_Entry
@@ -103,7 +120,7 @@ class dns_resolver : boost::noncopyable
 
   muduo::net::EventLoop* loop_;
   muduo::net::Channel* channel_;
-  std::unordered_map<uint16_t, struct Entry> dns_datas_;
+  std::unordered_map<uint16_t, std::shared_ptr<Entry> > dns_datas_;
   muduo::net::Buffer inputBuffer_;
   muduo::net::Buffer outputBuffer_;
   double timeout_;

@@ -212,7 +212,7 @@ bool dns_resolver::resolve(const std::string &host, const dns_resolver::ResolveC
     LOG_ERROR << "domain length is over " << 255;
     return false;
   }
-  if(dns_datas_.size() >= UINT16_MAX)
+  if(dns_datas_.size() + 1 >= UINT16_MAX)
   {
     LOG_ERROR << "dns_datas_ is full!"; // fixme: fatal instead ?
     return false;
@@ -253,7 +253,7 @@ bool dns_resolver::resolve(const std::string &host, const dns_resolver::ResolveC
     }
   }
   muduo::net::Buffer buf;
-  uint16_t transaction_id = static_cast<uint16_t>(dns_datas_.size());
+  uint16_t transaction_id = static_cast<uint16_t>(dns_datas_.size() + 1);
   buf.appendInt16(transaction_id);
   struct packet::flag query;
   buf.append(&query, sizeof(query));
@@ -267,7 +267,7 @@ bool dns_resolver::resolve(const std::string &host, const dns_resolver::ResolveC
   buf.appendInt16(query_type);
   buf.appendInt16(query_class);
   auto timer_id = loop_->runAfter(timeout_, boost::bind(&dns_resolver::handleTimeout, this, transaction_id));
-  dns_datas_[transaction_id] = { cb, host, ipv6 , 1, timer_id };
+  dns_datas_[transaction_id] =  std::make_shared<Entry>(cb, host, ipv6, 1, timer_id);
   send(&buf);
   return true;
 }
@@ -344,22 +344,6 @@ void dns_resolver::send(muduo::net::Buffer *buf)
     loop_->runInLoop(boost::bind(&dns_resolver::sendInLoop, this, buf->peek(), buf->readableBytes()));
 }
 
-// try to resolve again
-void dns_resolver::handleTimeout(uint16_t transaction_id)
-{
-  LOG_ERROR <<"transaction_id "<< transaction_id << " timeout, try again!";
-  auto& entry = dns_datas_[transaction_id];
-  if(++entry.count > MAX_TIMEOUT)
-  {
-    // use 0.0.0.0 to call resolveCallback function, notify client that the resolve is error!
-    entry.resolveCallback(muduo::net::InetAddress());
-    dns_datas_.erase(transaction_id);
-    return;
-  }
-  else
-    resolve(transaction_id);
-}
-
 void dns_resolver::handleRead(muduo::Timestamp receiveTime)
 {
   loop_->assertInLoopThread();
@@ -396,14 +380,14 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
     return;
   }
   auto entry = dns_datas_[transaction_id];
-  loop_->cancel(entry.timerId);
+  loop_->cancel(entry->timerId());
   dns_datas_.erase(transaction_id);
   struct packet::flag flag;
   memcpy(&flag, inputBuffer_.peek(), sizeof(flag));
   inputBuffer_.retrieveInt16();
   // fixme: truncated use tcp to query dns ?
   if (flag.flag1.QR() != 0x01 || flag.flag2.RCODE() != 0 || flag.flag1.RD() != 0) {
-    entry.resolveCallback(muduo::net::InetAddress());
+    entry->resolveCb(muduo::net::InetAddress());
     return;
   }
   uint16_t question_count = static_cast<uint16_t>(inputBuffer_.readInt16());
@@ -412,7 +396,7 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
   uint16_t ar_count = static_cast<uint16_t>(inputBuffer_.readInt16());
   // todo: what if ns_count and ar_count != 0
   if (question_count != 1 && ns_count != 0 && ar_count != 0) {
-    entry.resolveCallback(muduo::net::InetAddress());
+    entry->resolveCb(muduo::net::InetAddress());
     return;
   }
   uint8_t label_length;
@@ -420,23 +404,25 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
   while (inputBuffer_.readableBytes() >= 1 && (label_length = static_cast<uint8_t>(inputBuffer_.readInt8())) != 0) {
     if (inputBuffer_.readableBytes() < label_length) {
       LOG_ERROR << "error label length";
-      entry.resolveCallback(muduo::net::InetAddress());
+      entry->resolveCb(muduo::net::InetAddress());
+      return;
     }
     inputBuffer_.retrieve(label_length);
   }
   if (inputBuffer_.readableBytes() < 2 * 2)
   {
     LOG_ERROR << "error question packet!";
-    entry.resolveCallback(muduo::net::InetAddress());
+    entry->resolveCb(muduo::net::InetAddress());
+    return;
   }
   uint16_t query_type = static_cast<uint16_t>(inputBuffer_.readInt16());
   uint16_t query_class = static_cast<uint16_t>(inputBuffer_.readInt16());
   (void)query_class;
-  uint16_t valid_query_type = entry.ipv6 ? 28 : 1;
+  uint16_t valid_query_type = entry->ipv6() ? 28 : 1;
   if(valid_query_type != query_type)
   {
     LOG_ERROR << "query type not equal!";
-    entry.resolveCallback(muduo::net::InetAddress());
+    entry->resolveCb(muduo::net::InetAddress());
     return;
   }
 
@@ -444,13 +430,13 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
   {
     if(!impl::retrieve_name(&inputBuffer_))
     {
-      entry.resolveCallback(muduo::net::InetAddress());
+      entry->resolveCb(muduo::net::InetAddress());
       return;
     }
     if(inputBuffer_.readableBytes() < 10)
     {
       LOG_ERROR << "invalid answer packet!";
-      entry.resolveCallback(muduo::net::InetAddress());
+      entry->resolveCb(muduo::net::InetAddress());
       return;
     }
     uint8_t answer_type = static_cast<uint16_t>(inputBuffer_.readInt16());
@@ -461,14 +447,14 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
     if(data_length > inputBuffer_.readableBytes())
     {
       LOG_ERROR << "can't get entire data!";
-      entry.resolveCallback(muduo::net::InetAddress());
+      entry->resolveCb(muduo::net::InetAddress());
       return;
     }
     ttl = (ttl >= TTL ? TTL - 1 : ttl);
     if(answer_type == valid_query_type)
     {
       // ipv6
-      if(entry.ipv6 && data_length == 16)
+      if(entry->ipv6() && data_length == 16)
       {
         struct sockaddr_in6 data;
         ::bzero(&data, sizeof(data));
@@ -479,14 +465,14 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
           muduo::MutexLockGuard lock(mutex_);
           V6EntryPtr ptr = std::make_shared<AF_INET6_Entry>(data);
           WkV6EntryPtr wk_ptr(ptr);
-          v6_datas_[entry.domain] = wk_ptr;
+          v6_datas_[entry->domain()] = wk_ptr;
           v6_buffers_.at(ttl).insert(ptr);
         }
 
-        entry.resolveCallback(muduo::net::InetAddress(data));
+        entry->resolveCb(muduo::net::InetAddress(data));
         return;
       }// ipv4
-      else if (!entry.ipv6 && data_length == 4)
+      else if (!entry->ipv6() && data_length == 4)
       {
         struct sockaddr_in data;
         ::bzero(&data, sizeof(data));
@@ -497,18 +483,18 @@ void dns_resolver::MessageCallback(muduo::Timestamp receiveTime) {
           muduo::MutexLockGuard lock(mutex_);
           V4EntryPtr ptr = std::make_shared<AF_INET_Entry>(data);
           WkV4EntryPtr wk_ptr(ptr);
-          v4_datas_[entry.domain] = wk_ptr;
+          v4_datas_[entry->domain()] = wk_ptr;
           v4_buffers_.at(ttl).insert(ptr);
         }
 
-        entry.resolveCallback(muduo::net::InetAddress(data));
+        entry->resolveCb(muduo::net::InetAddress(data));
         return;
       }
     }
     else
       inputBuffer_.retrieve(data_length);
   }
-  entry.resolveCallback(muduo::net::InetAddress());
+  entry->resolveCb(muduo::net::InetAddress());
 }
 
 void dns_resolver::handleError()
@@ -530,16 +516,16 @@ void dns_resolver::resolve(uint16_t transaction_id)
   struct packet::count query_count;
   query_count.question_count = muduo::net::sockets::hostToNetwork16(1);
   buf.append(&query_count, sizeof(query_count));
-  if(!impl::convert_host(entry.domain, &buf))
+  if(!impl::convert_host(entry->domain(), &buf))
   {
     LOG_FATAL << "convert_host error !";
   }
   uint16_t query_class = 1;
-  u_int16_t query_type = (entry.ipv6 ? 28 : 1);
+  u_int16_t query_type = (entry->ipv6() ? 28 : 1);
   buf.appendInt16(query_class);
   buf.appendInt16(query_type);
   auto timer_id = loop_->runAfter(timeout_, boost::bind(&dns_resolver::handleTimeout, this, transaction_id));
-  entry.timerId = timer_id;
+  entry->set_timer_id(timer_id);
   send(&buf);
 }
 
@@ -548,4 +534,25 @@ void dns_resolver::onTimer()
   muduo::MutexLockGuard lock(mutex_);
   v4_buffers_.push_back(V4Bucket());
   v6_buffers_.push_back(V6Bucket());
+}
+
+// try to resolve again
+void dns_resolver::handleTimeout(uint16_t transaction_id)
+{
+  LOG_ERROR <<"transaction_id "<< transaction_id << " timeout, try again!";
+  if(!dns_datas_.count(transaction_id))
+  {
+    LOG_ERROR << "can't find transaction_id " << transaction_id << " at dns_datas_";
+    return;
+  }
+  auto entry = dns_datas_[transaction_id];
+  if(entry->add_count_and_get() > MAX_TIMEOUT)
+  {
+    // use 0.0.0.0 to call resolveCallback function, notify client that the resolve is error!
+    entry->resolveCb(muduo::net::InetAddress());
+    dns_datas_.erase(transaction_id);
+    return;
+  }
+  else
+    resolve(transaction_id);
 }

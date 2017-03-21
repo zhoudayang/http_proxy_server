@@ -32,7 +32,11 @@ int get_content_length(const std::string& value)
 proxy_server::proxy_server(muduo::net::EventLoop *loop, const muduo::net::InetAddress &addr)
   : loop_(loop),
     server_(loop_, addr, "proxy_server"),
+#ifdef ZY_DNS
     resolver_(loop_),
+#else
+    resolver_(loop_, cdns::Resolver::kDNSonly),
+#endif
     con_states_(),
     tunnels_()
 {
@@ -146,13 +150,13 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
         if(request.method() != "CONNECT")
         {
           std::string request_str = request.proxy_request();
-          resolver_.resolve(domain_name,
-                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, request_str, _1), false);
+          resolver_.resolve(domain_name.c_str(),
+                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, request_str, _1));
         }
         else
         {
-          resolver_.resolve(domain_name,
-                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, _1), true);
+          resolver_.resolve(domain_name.c_str(),
+                            boost::bind(&proxy_server::onResolve, this, boost::weak_ptr<muduo::net::TcpConnection>(con), port, _1));
         }
       }
       else
@@ -240,18 +244,27 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
         return;
       }
     }
-  }
-    // forward all data to proxy server directly
+  }// forward all data to proxy server directly
   else if(state == kTransport_https)
   {
     auto clientCon = boost::any_cast<const muduo::net::TcpConnectionPtr&>(con->getContext());
     clientCon->send(buf);
     buf->retrieveAll();
   }
+  else if(state == kResolved)
+  {
+    if(!con->getContext().empty())
+    {
+      LOG_INFO << " not empty";
+    }
+    LOG_INFO << "resolved state! ";
+    return;
+  }
   else
   {
-    LOG_ERROR << "unknown connection state!";
+    LOG_ERROR << "unkown connection state " << state;
     con->shutdown();
+    return;
   }
 }
 
@@ -272,7 +285,8 @@ void proxy_server::onResolveError(const muduo::net::TcpConnectionPtr &con)
 {
   const static muduo::string response("HTTP/1.1 504 Gateway Timeout\r\nProxy-Agent: zy_https/0.1\r\n\r\n");
   con->send(response.c_str());
-  con->shutdown();
+  if(con->connected())
+    con->shutdown();
 }
 
 void proxy_server::onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wkCon,
@@ -294,8 +308,7 @@ void proxy_server::onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wk
     auto con_name = con->name();
     set_con_state(con_name, kResolved);
     muduo::net::InetAddress address (addr.toIp(), port);
-    TunnelPtr tunnel(new Tunnel(loop_, address, con, true));
-    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state, this, con_name, kTransport_http));
+    TunnelPtr tunnel(new Tunnel(loop_, address, con, boost::bind(&proxy_server::set_con_state, this, con_name, proxy_server::kTransport_https), true));
     tunnel->setup();
     tunnel->connect();
     tunnels_[con_name] = tunnel;
@@ -316,13 +329,13 @@ void proxy_server::onResolve(const boost::weak_ptr<muduo::net::TcpConnection> wk
   {
     LOG_INFO << "fail to resolve the address of " << con->name();
     onResolveError(con);
+    return;
   }
   else {
     auto con_name = con->name();
     set_con_state(con_name, kResolved);
     muduo::net::InetAddress address(addr.toIp(), port);
-    TunnelPtr tunnel(new Tunnel(loop_, address, con, false));
-    tunnel->setTransportCallback(boost::bind(&proxy_server::set_con_state,this, con_name, kTransport_https));
+    TunnelPtr tunnel(new Tunnel(loop_, address, con, boost::bind(&proxy_server::set_con_state, this, con_name, proxy_server::kTransport_http), false));
     tunnel->set_request(request);
     tunnel->setup();
     tunnel->connect();

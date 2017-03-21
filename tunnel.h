@@ -16,16 +16,11 @@ class Tunnel : boost::noncopyable, public boost::enable_shared_from_this<Tunnel>
   typedef boost::function<void()> onTransportCallback;
 
   Tunnel(muduo::net::EventLoop* loop, const muduo::net::InetAddress& addr,
-         const TcpConnectionPtr& serverCon, bool https = false);
+         const TcpConnectionPtr& serverCon, const onTransportCallback& cb, bool https = false);
 
   void set_request(const std::string & request) { request_ = request; }
 
   void set_timeout(double timeout) { timeout_ = timeout; }
-
-  void setTransportCallback(const onTransportCallback& cb)
-  {
-    onTransportCallback_ = cb;
-  }
 
   void setup();
 

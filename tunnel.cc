@@ -9,10 +9,12 @@ using namespace zy;
 Tunnel::Tunnel(muduo::net::EventLoop *loop,
                const muduo::net::InetAddress &addr,
                const Tunnel::TcpConnectionPtr &serverCon,
+               const onTransportCallback& cb,
                bool https)
   : loop_(loop),
     client_(loop_, addr, "proxy_client"),
     serverCon_(serverCon),
+    onTransportCallback_(cb),
     timerId_(),
     host_addr_(addr.toIpPort()),
     timeout_(3), // default timeout is 3 seconds
@@ -26,7 +28,7 @@ void Tunnel::onConnection(const Tunnel::TcpConnectionPtr &con) {
   LOG_DEBUG << con->name() << " " << (con->connected() ? "up" : "down");
   if(con->connected())
   {
-    LOG_INFO << "proxy built ! " << serverCon_->peerAddress().toIp() << " <-> " << con->peerAddress().toIpPort();
+    LOG_INFO << "proxy built ! " << serverCon_->peerAddress().toIpPort() << " <-> " << con->peerAddress().toIpPort();
     if(timerId_)
     {
       loop_->cancel(*timerId_);
@@ -36,7 +38,6 @@ void Tunnel::onConnection(const Tunnel::TcpConnectionPtr &con) {
     con->setHighWaterMarkCallback(boost::bind(&Tunnel::onHighWaterMarkWeak, boost::weak_ptr<Tunnel>(shared_from_this()), kClient, _1, _2), 1024 * 1024);
     serverCon_->setContext(con);
     clientCon_ = con;
-    serverCon_->startRead();
     // 是否是https代理
     if(https_)
     {
@@ -47,10 +48,8 @@ void Tunnel::onConnection(const Tunnel::TcpConnectionPtr &con) {
       if(!request_.empty())
         con->send(request_.c_str());
     }
-    if(onTransportCallback_)
-    {
-      onTransportCallback();
-    }
+    onTransportCallback_();
+    serverCon_->startRead();
   }
   else
   {
@@ -159,7 +158,7 @@ void Tunnel::onHighWaterMarkWeak(const boost::weak_ptr<Tunnel> &wkTunnel,
 {
   auto tunnel = wkTunnel.lock();
   if(tunnel)
-    tunnel->onHighWaterMarkWeak(tunnel, which, con, bytes_to_sent);
+    tunnel->onHighWaterMark(which, con, bytes_to_sent);
 }
 
 void Tunnel::onWriteCompleteWeak(const boost::weak_ptr<Tunnel> &wkTunnel,

@@ -2,4 +2,4 @@
 
 mkdir build
 cd build
-make -j
+cmake .. && make -j

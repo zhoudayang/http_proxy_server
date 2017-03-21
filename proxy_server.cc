@@ -82,6 +82,7 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
   }
   auto& state = con_states_[name];
   // 此处需要解析http头或者connect 头
+  int retrieve_len = 0;
   if(state == kStart)
   {
     if(impl::findEOH(buf) != nullptr)
@@ -95,6 +96,7 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
         std::string line(begin, end);
         if(!line.empty())
         {
+          retrieve_len += static_cast<int>(line.size());
           bool ret;
           if(request.initialized())
             ret = request.add_header(line);
@@ -108,6 +110,7 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
             return;
           }
         }
+        retrieve_len += 2;
         buffer.retrieveUntil(end + 2);
         begin = buffer.peek();
       }
@@ -135,14 +138,7 @@ void proxy_server::onMessage(const muduo::net::TcpConnectionPtr &con, muduo::net
         // got all http request, stop read, forbid execute onMessage function again
         con->stopRead();
         request.set_content(std::string(buffer.peek(), buffer.peek() + length));
-        buffer.retrieve(length);
-        begin = buf->peek();
-        end = nullptr;
-        while((end = buf->findCRLF()) != nullptr)
-        {
-          buf->retrieveUntil(end + 2);
-          begin = buf->peek();
-        }
+        buf->retrieve(retrieve_len); 
         buf->retrieve(length);
         state = kGotRequest;
         uint16_t port = request.port();

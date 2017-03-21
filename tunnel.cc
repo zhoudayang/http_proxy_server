@@ -74,7 +74,8 @@ void Tunnel::teardown()
   if(serverCon_)
   {
     serverCon_->setContext(boost::any());
-    serverCon_->shutdown();
+    if(serverCon_->connected())
+        serverCon_->shutdown();
   }
   clientCon_.reset();
 }

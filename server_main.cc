@@ -34,7 +34,7 @@ int main(int argc, const char* argv[])
   po::options_description desc("proxy options");
   desc.add_options()
       ("help,h", "produce help message")
-      ("host,h", po::value<muduo::string>(), "bind ip address")
+      ("ip,i", po::value<muduo::string>(), "bind ip address")
       ("port,p", po::value<uint16_t>(), "listen port");
   po::variables_map value_map;
   po::store(po::parse_command_line(argc, argv, desc), value_map);
@@ -49,9 +49,9 @@ int main(int argc, const char* argv[])
     std::cout << desc << std::endl;
     exit(0);
   }
-  if(value_map.count("host"))
+  if(value_map.count("ip"))
   {
-    host = value_map["host"].as<muduo::string>();
+    host = value_map["ip"].as<muduo::string>();
   }
   if(value_map.count("port"))
   {
